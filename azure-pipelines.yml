@@ -1,0 +1,127 @@
+###############################################################################
+# Multi-stage CI/CD for an Azure microservice:
+#   Build → Plan(dev) → Deploy(dev) → Plan(prod) → Deploy(prod, approval gated)
+#
+# Secrets are never inlined — the `acme-platform` variable group is linked to an
+# Azure Key Vault, and Azure access uses a workload-identity service connection.
+# Production deploys are gated by an Azure DevOps Environment approval check.
+###############################################################################
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include: [app/*, terraform/*, pipelines/*, azure-pipelines.yml]
+
+pr:
+  branches:
+    include: [main]
+
+variables:
+  - group: acme-platform            # linked to Key Vault: holds subscription/tenant + app secrets
+  - name: serviceConnection
+    value: sc-acme-azure            # ARM service connection (workload identity federation)
+  - name: vmImage
+    value: ubuntu-latest
+
+stages:
+  # ─────────────────────────────────────────────────────────────────────────
+  - stage: Build
+    displayName: "Build & push image"
+    jobs:
+      - job: docker
+        pool:
+          vmImage: $(vmImage)
+        steps:
+          - template: pipelines/templates/docker-build-push.yml
+            parameters:
+              serviceConnection: $(serviceConnection)
+              registryName: acmedev
+              imageName: checkout-svc
+              environment: dev
+
+  # ─────────────────────────────────────────────────────────────────────────
+  - stage: Plan_Dev
+    displayName: "Terraform Plan (dev)"
+    dependsOn: Build
+    jobs:
+      - job: plan
+        pool:
+          vmImage: $(vmImage)
+        steps:
+          - template: pipelines/templates/terraform-plan.yml
+            parameters:
+              environment: dev
+              workingDirectory: terraform/environments/dev
+              serviceConnection: $(serviceConnection)
+              backendStorageAccount: sttfstateacme
+
+  - stage: Deploy_Dev
+    displayName: "Deploy (dev)"
+    dependsOn: Plan_Dev
+    jobs:
+      - deployment: apply_dev
+        environment: dev          # no approval — auto-promotes
+        pool:
+          vmImage: $(vmImage)
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: pipelines/templates/terraform-apply.yml
+                  parameters:
+                    environment: dev
+                    workingDirectory: terraform/environments/dev
+                    serviceConnection: $(serviceConnection)
+                    backendStorageAccount: sttfstateacme
+                - template: pipelines/templates/appservice-slot-deploy.yml
+                  parameters:
+                    serviceConnection: $(serviceConnection)
+                    resourceGroup: rg-acme-dev
+                    appServiceName: app-acme-dev
+                    registryName: acmedev
+                    imageName: checkout-svc
+                    imageTag: $(Build.BuildId)
+
+  # ─────────────────────────────────────────────────────────────────────────
+  - stage: Plan_Prod
+    displayName: "Terraform Plan (prod)"
+    dependsOn: Deploy_Dev
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: plan
+        pool:
+          vmImage: $(vmImage)
+        steps:
+          - template: pipelines/templates/terraform-plan.yml
+            parameters:
+              environment: prod
+              workingDirectory: terraform/environments/prod
+              serviceConnection: $(serviceConnection)
+              backendStorageAccount: sttfstateacme
+
+  - stage: Deploy_Prod
+    displayName: "Deploy (prod)"
+    dependsOn: Plan_Prod
+    jobs:
+      - deployment: apply_prod
+        environment: prod         # configure a manual approval check on this Environment
+        pool:
+          vmImage: $(vmImage)
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: pipelines/templates/terraform-apply.yml
+                  parameters:
+                    environment: prod
+                    workingDirectory: terraform/environments/prod
+                    serviceConnection: $(serviceConnection)
+                    backendStorageAccount: sttfstateacme
+                - template: pipelines/templates/appservice-slot-deploy.yml
+                  parameters:
+                    serviceConnection: $(serviceConnection)
+                    resourceGroup: rg-acme-prod
+                    appServiceName: app-acme-prod
+                    registryName: acmeprod
+                    imageName: checkout-svc
+                    imageTag: $(Build.BuildId)

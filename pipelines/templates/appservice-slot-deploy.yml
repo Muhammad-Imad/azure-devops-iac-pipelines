@@ -1,0 +1,71 @@
+# Reusable template: blue/green deploy to App Service via a staging slot, then swap.
+# The new image is deployed to the "staging" slot, health-checked, and only then
+# swapped into production — giving near-zero-downtime, instantly reversible releases.
+parameters:
+  - name: serviceConnection
+    type: string
+  - name: resourceGroup
+    type: string
+  - name: appServiceName
+    type: string
+  - name: slotName
+    type: string
+    default: staging
+  - name: registryName
+    type: string
+  - name: imageName
+    type: string
+    default: checkout-svc
+  - name: imageTag
+    type: string
+  - name: healthCheckPath
+    type: string
+    default: /healthz
+
+steps:
+  - task: AzureCLI@2
+    displayName: "Deploy image to staging slot"
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        IMAGE="${{ parameters.registryName }}.azurecr.io/${{ parameters.imageName }}:${{ parameters.imageTag }}"
+        az webapp config container set \
+          --name "${{ parameters.appServiceName }}" \
+          --resource-group "${{ parameters.resourceGroup }}" \
+          --slot "${{ parameters.slotName }}" \
+          --container-image-name "$IMAGE"
+
+  - task: AzureCLI@2
+    displayName: "Warm up & health-check staging slot"
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        HOST=$(az webapp show -n "${{ parameters.appServiceName }}" -g "${{ parameters.resourceGroup }}" \
+                 --slot "${{ parameters.slotName }}" --query defaultHostName -o tsv)
+        URL="https://$HOST${{ parameters.healthCheckPath }}"
+        echo "Probing $URL"
+        for i in $(seq 1 30); do
+          code=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || true)
+          if [ "$code" = "200" ]; then echo "Slot healthy"; exit 0; fi
+          echo "attempt $i: $code — retrying in 10s"; sleep 10
+        done
+        echo "Staging slot failed health check"; exit 1
+
+  - task: AzureCLI@2
+    displayName: "Swap staging -> production"
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        az webapp deployment slot swap \
+          --name "${{ parameters.appServiceName }}" \
+          --resource-group "${{ parameters.resourceGroup }}" \
+          --slot "${{ parameters.slotName }}" \
+          --target-slot production

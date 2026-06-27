@@ -1,0 +1,67 @@
+# Reusable template: terraform init + validate + plan, publishing the plan as an artifact.
+parameters:
+  - name: environment        # dev | prod
+    type: string
+  - name: workingDirectory
+    type: string
+  - name: serviceConnection  # Azure Resource Manager service connection (workload identity federation)
+    type: string
+  - name: backendStorageAccount
+    type: string
+  - name: backendResourceGroup
+    type: string
+    default: rg-tfstate
+  - name: backendContainer
+    type: string
+    default: tfstate
+
+steps:
+  - task: TerraformInstaller@1
+    displayName: "Install Terraform"
+    inputs:
+      terraformVersion: "latest"
+
+  - task: AzureCLI@2
+    displayName: "Terraform Init (${{ parameters.environment }})"
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      workingDirectory: ${{ parameters.workingDirectory }}
+      # ARM_USE_AZUREAD lets the azurerm backend authenticate with the pipeline's
+      # federated identity instead of a stored storage-account key.
+      inlineScript: |
+        export ARM_USE_AZUREAD=true
+        terraform init \
+          -backend-config="resource_group_name=${{ parameters.backendResourceGroup }}" \
+          -backend-config="storage_account_name=${{ parameters.backendStorageAccount }}" \
+          -backend-config="container_name=${{ parameters.backendContainer }}" \
+          -backend-config="key=${{ parameters.environment }}.terraform.tfstate"
+
+  - task: AzureCLI@2
+    displayName: "Terraform Validate"
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      workingDirectory: ${{ parameters.workingDirectory }}
+      inlineScript: |
+        terraform fmt -check -recursive
+        terraform validate
+
+  - task: AzureCLI@2
+    displayName: "Terraform Plan"
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      workingDirectory: ${{ parameters.workingDirectory }}
+      inlineScript: |
+        export ARM_USE_AZUREAD=true
+        terraform plan -input=false -var-file="${{ parameters.environment }}.tfvars" -out=tfplan
+
+  - task: PublishPipelineArtifact@1
+    displayName: "Publish plan artifact"
+    inputs:
+      targetPath: ${{ parameters.workingDirectory }}/tfplan
+      artifact: "tfplan-${{ parameters.environment }}"

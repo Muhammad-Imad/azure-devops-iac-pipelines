@@ -1,0 +1,46 @@
+# Reusable template: build a container image and push it to Azure Container Registry.
+# Tags the image with both the build id (immutable) and the environment moving tag.
+parameters:
+  - name: serviceConnection
+    type: string
+  - name: registryName        # e.g. acmedev (without .azurecr.io)
+    type: string
+  - name: imageName
+    type: string
+    default: checkout-svc
+  - name: dockerfilePath
+    type: string
+    default: app/Dockerfile
+  - name: buildContext
+    type: string
+    default: app
+  - name: environment
+    type: string
+
+steps:
+  - task: AzureCLI@2
+    displayName: "Build & push ${{ parameters.imageName }} -> ACR"
+    inputs:
+      azureSubscription: ${{ parameters.serviceConnection }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        REGISTRY="${{ parameters.registryName }}.azurecr.io"
+        IMAGE="$REGISTRY/${{ parameters.imageName }}"
+        TAG="$(Build.BuildId)"
+
+        # Token-based login via the pipeline identity (no admin user / stored creds).
+        az acr login --name "${{ parameters.registryName }}"
+
+        docker build \
+          -t "$IMAGE:$TAG" \
+          -t "$IMAGE:${{ parameters.environment }}" \
+          -f "${{ parameters.dockerfilePath }}" \
+          "${{ parameters.buildContext }}"
+
+        docker push "$IMAGE:$TAG"
+        docker push "$IMAGE:${{ parameters.environment }}"
+
+        echo "##vso[task.setvariable variable=imageTag;isOutput=true]$TAG"
+    name: pushImage
