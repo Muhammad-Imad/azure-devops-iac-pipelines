@@ -82,7 +82,7 @@ module "key_vault" {
   resource_group_name        = module.resource_group.name
   location                   = var.location
   tenant_id                  = var.tenant_id
-  purge_protection_enabled   = false
+  purge_protection_enabled   = true
   soft_delete_retention_days = 7
   network_default_action     = "Deny"
   allowed_subnet_ids         = [module.vnet.subnet_ids["snet-apps"]]

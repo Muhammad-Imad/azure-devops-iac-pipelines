@@ -9,6 +9,9 @@ terraform {
   }
 }
 
+# API access IS restricted via the api_server_access_profile block below; the tfsec rule
+# predates that block and only recognises the deprecated api_server_authorized_ip_ranges.
+#tfsec:ignore:azure-container-limit-authorized-ips
 resource "azurerm_kubernetes_cluster" "this" {
   name                      = var.name
   resource_group_name       = var.resource_group_name
@@ -49,18 +52,20 @@ resource "azurerm_kubernetes_cluster" "this" {
     outbound_type     = "loadBalancer"
   }
 
+  # Restrict the public API server to known CIDRs (CI runners / VPN egress).
+  api_server_access_profile {
+    authorized_ip_ranges = var.api_server_authorized_ip_ranges
+  }
+
   azure_active_directory_role_based_access_control {
     managed                = true
     azure_rbac_enabled     = true
     admin_group_object_ids = var.admin_group_object_ids
   }
 
-  dynamic "oms_agent" {
-    for_each = var.log_analytics_workspace_id == null ? [] : [1]
-
-    content {
-      log_analytics_workspace_id = var.log_analytics_workspace_id
-    }
+  # Container Insights / OMS logging — always enabled (workspace is required).
+  oms_agent {
+    log_analytics_workspace_id = var.log_analytics_workspace_id
   }
 
   tags = var.tags

@@ -60,6 +60,12 @@ variable "admin_group_object_ids" {
   default     = []
 }
 
+variable "api_server_authorized_ip_ranges" {
+  type        = list(string)
+  description = "CIDRs allowed to reach the Kubernetes API server (e.g. CI runners / VPN egress). Restricts public API exposure."
+  default     = ["203.0.113.0/24"]
+}
+
 variable "tags" {
   type        = map(string)
   description = "Tags applied to the cluster."
