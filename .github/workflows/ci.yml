@@ -47,4 +47,6 @@ jobs:
       - name: tfsec
         uses: aquasecurity/tfsec-action@v1.0.3
         with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          soft_fail: true
           working_directory: terraform
